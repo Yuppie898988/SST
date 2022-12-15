@@ -16,6 +16,11 @@ from mmdet.core import multi_apply
 from .single_stage import SingleStage3DDetector
 from mmdet3d.models.segmentors.base import Base3DSegmentor
 
+try:
+    from torchex import connected_components as cc_gpu
+except ImportError:
+    cc_gpu = None
+
 def fps(points, N):
     idx = furthest_point_sample(points.unsqueeze(0), N)
     idx = idx.squeeze(0).long()
@@ -27,6 +32,14 @@ def filter_almost_empty(coors, min_points):
     cnt_per_point = unq_cnt[unq_inv]
     valid_mask = cnt_per_point >= min_points
     return valid_mask
+
+def find_connected_componets_gpu(points, batch_idx, dist):
+
+    assert len(points) > 0
+    assert cc_gpu is not None
+    components_inds = cc_gpu(points, batch_idx, dist, 100, 2, False)
+    assert len(torch.unique(components_inds)) == components_inds.max().item() + 1
+    return components_inds
 
 def find_connected_componets(points, batch_idx, dist):
 
@@ -150,6 +163,7 @@ class VoteSegmentor(Base3DSegmentor):
                  segmentation_head,
                  decode_neck=None,
                  auxiliary_head=None,
+                 voxel_downsampling_size=None,
                  train_cfg=None,
                  test_cfg=None,
                  init_cfg=None,
@@ -179,6 +193,7 @@ class VoteSegmentor(Base3DSegmentor):
         self.save_list = []
         self.point_cloud_range = voxel_layer['point_cloud_range']
         self.voxel_size = voxel_layer['voxel_size']
+        self.voxel_downsampling_size = voxel_downsampling_size
         self.tanh_dims = tanh_dims
     
     def encode_decode(self, ):
@@ -243,7 +258,18 @@ class VoteSegmentor(Base3DSegmentor):
         out_data[shuffle_inds] = temp_data
 
         return out_data
-    
+
+    def voxel_downsample(self, points_list):
+        device = points_list[0].device
+        out_points_list = []
+        voxel_size = torch.tensor(self.voxel_downsampling_size, device=device)
+        pc_range = torch.tensor(self.point_cloud_range, device=device)
+
+        for points in points_list:
+            coors = torch.div(points[:, :3] - pc_range[None, :3], voxel_size[None, :], rounding_mode='floor').long()
+            out_points, new_coors = scatter_v2(points, coors, mode='avg', return_inv=False)
+            out_points_list.append(out_points)
+        return out_points_list
 
     def forward_train(self,
                       points,
@@ -259,6 +285,8 @@ class VoteSegmentor(Base3DSegmentor):
             # a hack way to scale the intensity and elongation in WOD
             points = [torch.cat([p[:, :3], torch.tanh(p[:, 3:])], dim=1) for p in points]
         
+        if self.voxel_downsampling_size is not None:
+            points = self.voxel_downsample(points)
 
         labels, vote_targets, vote_mask = self.segmentation_head.get_targets(points, gt_bboxes_3d, gt_labels_3d)
 
@@ -310,6 +338,8 @@ class VoteSegmentor(Base3DSegmentor):
         elif points[0].size(1) in (4,5):
             points = [torch.cat([p[:, :3], torch.tanh(p[:, 3:])], dim=1) for p in points]
 
+        if self.voxel_downsampling_size is not None:
+            points = self.voxel_downsample(points)
 
         seg_pred = []
         x, pts_coors, points = self.extract_feat(points, img_metas)
@@ -860,6 +890,7 @@ class ClusterAssigner(torch.nn.Module):
         point_cloud_range,
         connected_dist,
         class_names=['Car', 'Cyclist', 'Pedestrian'],
+        gpu_clustering=(False, False),
     ):
         super().__init__()
         self.cluster_voxel_size = cluster_voxel_size
@@ -867,6 +898,7 @@ class ClusterAssigner(torch.nn.Module):
         self.connected_dist = connected_dist
         self.point_cloud_range = point_cloud_range
         self.class_names = class_names
+        self.gpu_clustering = gpu_clustering
 
     @torch.no_grad()
     def forward(self, points_list, batch_idx_list, gt_bboxes_3d=None, gt_labels_3d=None, origin_points=None):
@@ -916,7 +948,10 @@ class ClusterAssigner(torch.nn.Module):
         if self.training:
             cluster_inds = find_connected_componets(sampled_centers, voxel_coors[:, 0], dist)
         else:
-            cluster_inds = find_connected_componets_single_batch(sampled_centers, voxel_coors[:, 0], dist)
+            if self.gpu_clustering[1]:
+                cluster_inds = find_connected_componets_gpu(sampled_centers, voxel_coors[:, 0], dist)
+            else:
+                cluster_inds = find_connected_componets_single_batch(sampled_centers, voxel_coors[:, 0], dist)
         assert len(cluster_inds) == len(sampled_centers)
 
         cluster_inds_per_point = cluster_inds[inv_inds]

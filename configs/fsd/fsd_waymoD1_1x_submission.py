@@ -1,5 +1,6 @@
+# using trainval for training
 _base_ = [
-    '../_base_/datasets/waymo-fsd.py',
+    '../_base_/datasets/waymo-fsd-submission.py',
     '../_base_/schedules/cosine_2x.py',
     '../_base_/default_runtime.py',
 ]

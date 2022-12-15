@@ -4,11 +4,24 @@ _base_ = [
     '../_base_/default_runtime.py',
 ]
 
-seg_voxel_size = (0.25, 0.25, 0.2)
-point_cloud_range = [-80, -80, -2, 80, 80, 4]
+seg_voxel_size = (0.32, 0.32, 6)
+seg_window_shape=(12, 12, 1) # 12 * 0.32m
+point_cloud_range = [-74.88, -74.88, -2, 74.88, 74.88, 4]
+seg_drop_info_training ={
+    0:{'max_tokens':30, 'drop_range':(0, 30)},
+    1:{'max_tokens':60, 'drop_range':(30, 60)},
+    2:{'max_tokens':100, 'drop_range':(60, 100000)},
+}
+seg_drop_info_test ={
+    0:{'max_tokens':30, 'drop_range':(0, 30)},
+    1:{'max_tokens':60, 'drop_range':(30, 60)},
+    2:{'max_tokens':100, 'drop_range':(60, 100)},
+    3:{'max_tokens':144, 'drop_range':(100, 100000)},
+}
+seg_drop_info = (seg_drop_info_training, seg_drop_info_test)
 class_names = ['Car', 'Pedestrian', 'Cyclist']
 num_classes = len(class_names)
-seg_score_thresh = (0.3, 0.25, 0.25)
+seg_score_thresh = (0.5, 0.25, 0.25)
 
 segmentor = dict(
     type='VoteSegmentor',
@@ -23,7 +36,7 @@ segmentor = dict(
     voxel_encoder=dict(
         type='DynamicScatterVFE',
         in_channels=5,
-        feat_channels=[64, 64],
+        feat_channels=[64, 64, 128],
         voxel_size=seg_voxel_size,
         with_cluster_center=True,
         with_voxel_center=True,
@@ -33,23 +46,29 @@ segmentor = dict(
     ),
 
     middle_encoder=dict(
-        type='PseudoMiddleEncoderForSpconvFSD',
+        type='SSTInputLayerV2',
+        window_shape=seg_window_shape,
+        sparse_shape=(468, 468, 1),
+        shuffle_voxels=True,
+        debug=True,
+        drop_info=seg_drop_info,
+        pos_temperature=1000,
+        normalize_pos=False,
     ),
 
     backbone=dict(
-        type='SimpleSparseUNet',
-        in_channels=64,
-        sparse_shape=[32, 640, 640],
-        order=('conv', 'norm', 'act'),
-        norm_cfg=dict(type='naiveSyncBN1d', eps=1e-3, momentum=0.01),
-        base_channels=64,
-        output_channels=128,
-        encoder_channels=((64, ), (64, 64, 64), (64, 64, 64), (128, 128, 128), (256, 256, 256)),
-        encoder_paddings=((1, ), (1, 1, 1), (1, 1, 1), ((0, 1, 1), 1, 1), (1, 1, 1)),
-        decoder_channels=((256, 256, 128), (128, 128, 64), (64, 64, 64), (64, 64, 64), (64, 64, 64)),
-        decoder_paddings=((1, 1), (1, 0), (1, 0), (0, 0), (0, 1)), # decoder paddings seem useless in SubMConv
+        type='SSTv2',
+        d_model=[128,] * 4,
+        nhead=[8, ] * 4,
+        num_blocks=4,
+        dim_feedforward=[256, ] * 4,
+        num_attached_conv=0,
+        conv_in_channel=128,
+        conv_out_channel=128,
+        debug=True,
+        to_bev=False,
+        layer_cfg=dict(use_bn=True, cosine=True, tau_min=0.01),
     ),
-
 
     decode_neck=dict(
         type='Voxel2PointScatterNeck',
@@ -59,7 +78,7 @@ segmentor = dict(
 
     segmentation_head=dict(
         type='VoteSegHead',
-        in_channel=67,
+        in_channel=67 + 64,
         hidden_dims=[128, 128],
         num_classes=num_classes,
         dropout_ratio=0.0,
@@ -92,7 +111,7 @@ model = dict(
     backbone=dict(
         type='SIR',
         num_blocks=3,
-        in_channels=[84,] + [133, ] * 2,
+        in_channels=[84 + 64] + [133, ] * 2,
         feat_channels=[[128, 128], ] * 3,
         rel_mlp_hidden_dims=[[16, 32],] * 3,
         norm_cfg=dict(type='LN', eps=1e-3),
@@ -151,7 +170,7 @@ model = dict(
             type='FullySparseBboxHead',
             num_classes=num_classes,
             num_blocks=6,
-            in_channels=[213, 146, 146, 146, 146, 146], 
+            in_channels=[277, 146, 146, 146, 146, 146], 
             feat_channels=[[128, 128], ] * 6,
             rel_mlp_hidden_dims=[[16, 32],] * 6,
             rel_mlp_in_channels=[13, ] * 6,
@@ -292,7 +311,7 @@ runner = dict(type='EpochBasedRunner', max_epochs=12)
 evaluation = dict(interval=12)
 
 data = dict(
-    samples_per_gpu=2,
+    samples_per_gpu=1,
     workers_per_gpu=4,
     train=dict(
         type='RepeatDataset',
@@ -306,9 +325,11 @@ log_config=dict(
 )
 custom_hooks = [
     dict(type='DisableAugmentationHook', num_last_epochs=1, skip_type_keys=('ObjectSample', 'RandomFlip3D', 'GlobalRotScaleTrans')),
-    dict(type='EnableFSDDetectionHookIter', enable_after_iter=4000, threshold_buffer=0.3, buffer_iter=8000) 
+    dict(type='EnableFSDDetectionHookIter', enable_after_iter=9000, threshold_buffer=0.3, buffer_iter=20000)
+    # if use pretrain, warmup is not necessary. User could uncomment the following line
+    # dict(type='EnableFSDDetectionHookIter', enable_after_iter=0, threshold_buffer=0.3, buffer_iter=10)
 ]
 
 optimizer = dict(
-    lr=3e-5,
+    lr=1e-5,
 )

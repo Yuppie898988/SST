@@ -11,11 +11,11 @@ and
 [Embracing Single Stride 3D Object Detector with Sparse Transformer](https://arxiv.org/pdf/2112.06375.pdf).
 
 **🔥 FSD Preview Release**
-- Code of SpConv-based FSD on Waymo is released. See `./configs/fsd/fsd_waymoD1_1x.py`
+- Code of FSD on Waymo is released. See `./configs/fsd/fsd_waymoD1_1x.py`
 - We provide the tools for processing Argoverse 2 dataset in `./tools/argo`. We will release the instruction and configs of Argo2 model later.
 - A very fast Waymo evaluation, see Usage section for detailed instructions. The whole evaluation process of FSD on Waymo costs less than **10min** with 8 2080Ti GPUs.
-- We cannot distribute model weights of FSD on Waymo due to the license. Users could contact us for the private model weights.
-- Before using this repo, please install [TorchEx](https://github.com/Abyssaledge/TorchEx) and SpConv2 (SpConv 1.x is not supported).
+- We cannot distribute model weights of FSD due to the [license of WOD](https://waymo.com/open/terms). Users could contact us for the private model weights.
+- Before using this repo, please install [TorchEx](https://github.com/Abyssaledge/TorchEx), [SpConv2](https://github.com/traveller59/spconv) (SpConv 1.x is not supported) and [torch_scatter](https://github.com/rusty1s/pytorch_scatter).
 
 **NEWS**
 - [22-09-19] The code of FSD is released here.
@@ -45,6 +45,15 @@ Our implementation is based on [MMDetection3D](https://github.com/open-mmlab/mmd
 - Passing the argument `--eval fast` (See `run.sh`). This argument will directly convert network outputs to Waymo `.bin` format, which is much faster than the old way.
 - Users could further build the multi-thread Waymo evaluation tool ([link](https://github.com/Abyssaledge/waymo-open-dataset-master)) for faster evaluation. 
 
+### For FSD:
+FSD requires segmentation first, so we use an `EnableFSDDetectionHookIter` to enable the detection part after a segmentation warmup. 
+
+If the warmup parameter is not properly modified (which is likely in your customized dataset), the memory cost might be large and the training time will be unstable (caused by CCL in CPU, we will replace it with the GPU version later).
+
+If users do not want to waste time on the `EnableFSDDetectionHookIter`, users could first use our fast pretrain config (e.g., `fsd_sst_encoder_pretrain`) for a once-for-all warmup. The script `tools/model_converters/fsd_pretrain_converter.py` could convert the pretrain checkpoint, which can be loaded for FSD training (with a `load_from='xx'` in config). With the once-for-all pretrain, users could adopt a much short `EnableFSDDetectionHookIter`.
+
+SST based FSD converges slower than SpConv based FSD, so we recommend users adopt the fast pretrain for SST based FSD.
+
 ### For SST:
 We only provide the single-stage model here, as for our two-stage models, please follow [LiDAR-RCNN](https://github.com/TuSimple/LiDAR_RCNN). It's also a good choice to apply other powerful second stage detectors to our single-stage SST.
 
@@ -56,7 +65,8 @@ To enable faster SSTInputLayer, clone https://github.com/Abyssaledge/TorchEx, an
 
 ## Main results
 ### FSD
-Please refer to this [page](https://github.com/tusen-ai/SST/issues/62).
+Validation: please refer to this [page](https://github.com/tusen-ai/SST/issues/62).
+Test: please refer to this [submission](https://waymo.com/open/challenges/entry/?timestamp=1665211204047769&challenge=DETECTION_3D&emailId=1cb154ab-1558)
 
 ### SST
 #### Waymo Leaderboard

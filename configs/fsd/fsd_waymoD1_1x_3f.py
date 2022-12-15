@@ -1,5 +1,5 @@
 _base_ = [
-    '../_base_/datasets/waymo-fsd.py',
+    '../_base_/datasets/waymo-fsd-3sweeps.py',
     '../_base_/schedules/cosine_2x.py',
     '../_base_/default_runtime.py',
 ]
@@ -13,6 +13,9 @@ seg_score_thresh = (0.3, 0.25, 0.25)
 segmentor = dict(
     type='VoteSegmentor',
 
+    tanh_dims=[3, 4],
+    voxel_downsampling_size=(0.05, 0.05, 0.05),
+
     voxel_layer=dict(
         voxel_size=seg_voxel_size,
         max_num_points=-1,
@@ -22,8 +25,8 @@ segmentor = dict(
 
     voxel_encoder=dict(
         type='DynamicScatterVFE',
-        in_channels=5,
-        feat_channels=[64, 64],
+        in_channels=6,
+        feat_channels=[32, 64],
         voxel_size=seg_voxel_size,
         with_cluster_center=True,
         with_voxel_center=True,
@@ -60,7 +63,7 @@ segmentor = dict(
     segmentation_head=dict(
         type='VoteSegHead',
         in_channel=67,
-        hidden_dims=[128, 128],
+        hidden_dims=[64, 128],
         num_classes=num_classes,
         dropout_ratio=0.0,
         conv_cfg=dict(type='Conv1d'),
@@ -92,7 +95,7 @@ model = dict(
     backbone=dict(
         type='SIR',
         num_blocks=3,
-        in_channels=[84,] + [133, ] * 2,
+        in_channels=[85,] + [134, ] * 2,
         feat_channels=[[128, 128], ] * 3,
         rel_mlp_hidden_dims=[[16, 32],] * 3,
         norm_cfg=dict(type='LN', eps=1e-3),
@@ -151,7 +154,7 @@ model = dict(
             type='FullySparseBboxHead',
             num_classes=num_classes,
             num_blocks=6,
-            in_channels=[213, 146, 146, 146, 146, 146], 
+            in_channels=[214, 147, 147, 147, 147, 147], 
             feat_channels=[[128, 128], ] * 6,
             rel_mlp_hidden_dims=[[16, 32],] * 6,
             rel_mlp_in_channels=[13, ] * 6,
