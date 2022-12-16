@@ -121,3 +121,48 @@ def points_in_boxes_batch(points, boxes):
                                               box_idxs_of_pts)
 
     return box_idxs_of_pts
+
+def points_in_boxes_mixed_gpu(points, boxes, batch_to_box):
+    """Find points that are in boxes with mixed batches (CUDA)
+
+    Args:
+        points (torch.Tensor): [M, 4], [x, y, z, b] in LiDAR coordinate, b is the index of batch
+        boxes (torch.Tensor): [T, 7],
+            num_valid_boxes <= T, [x, y, z, w, l, h, ry] in LiDAR coordinate,
+            (x, y, z) is the bottom center
+        batch_to_box (torch.Tensor): [B+1,], B is the number of batches, which indicates the index of
+            boxes according to the index of batch
+
+    Returns:
+        box_idxs_of_pts (torch.Tensor): (M,), default background = -1
+    """
+    assert boxes.shape[1] == 7, \
+        f'boxes dimension should be 7, ' \
+        f'got unexpected shape {boxes.shape[1]}'
+    assert points.shape[1] == 4, \
+        f'points dimension should be 4, ' \
+        f'got unexpected shape {points.shape[1]}'
+    num_points, _ = points.shape
+
+    box_idxs_of_pts = points.new_zeros(num_points,
+                                       dtype=torch.int).fill_(-1)
+
+    # If manually put the tensor 'points' or 'boxes' on a device
+    # which is not the current device, some temporary variables
+    # will be created on the current device in the cuda op,
+    # and the output will be incorrect.
+    # Therefore, we force the current device to be the same
+    # as the device of the tensors if it was not.
+    # Please refer to https://github.com/open-mmlab/mmdetection3d/issues/305
+    # for the incorrect output before the fix.
+    points_device = points.get_device()
+    assert points_device == boxes.get_device(), \
+        'Points and boxes should be put on the same device'
+    if torch.cuda.current_device() != points_device:
+        torch.cuda.set_device(points_device)
+    roiaware_pool3d_ext.points_in_boxes_mixed_gpu(boxes.contiguous(),
+                                            points.contiguous(),
+                                            batch_to_box,
+                                            box_idxs_of_pts)
+
+    return box_idxs_of_pts

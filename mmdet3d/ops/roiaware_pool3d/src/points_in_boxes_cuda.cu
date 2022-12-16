@@ -104,6 +104,31 @@ __global__ void points_in_boxes_batch_kernel(int batch_size, int boxes_num,
   }
 }
 
+__global__ void points_in_boxes_mixed_kernel(int pts_num, const float *boxes,
+                                       const float *pts, const int *batch_to_box,
+                                       int *box_idx_of_points) {
+  // params boxes: (N, 7) [x, y, z, w, l, h, rz] in LiDAR coordinate, b is 
+  // the batch id, each box DO NOT overlaps params pts: (npoints, 4) [x, y, z, b]
+  // in LiDAR coordinate params boxes_idx_of_points: (npoints, ), default -1
+
+  int pt_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (pt_idx >= pts_num) return;
+  pts += pt_idx * 4;
+  int batch_idx = pts[3];
+  int box_begin = batch_to_box[batch_idx], box_end = batch_to_box[batch_idx+1];
+  box_idx_of_points += pt_idx*1;
+
+  float local_x = 0, local_y = 0;
+  int cur_in_flag = 0;
+  for (int k = box_begin; k < box_end; k++) {
+    cur_in_flag = check_pt_in_box3d(pts, boxes + k * 7, local_x, local_y);
+    if (cur_in_flag) {
+      box_idx_of_points[0] = k;
+      break;
+    }
+  }
+}
+
 void points_in_boxes_launcher(int batch_size, int boxes_num, int pts_num,
                               const float *boxes, const float *pts,
                               int *box_idx_of_points) {
@@ -141,6 +166,29 @@ void points_in_boxes_batch_launcher(int batch_size, int boxes_num, int pts_num,
   dim3 threads(THREADS_PER_BLOCK);
   points_in_boxes_batch_kernel<<<blocks, threads>>>(
       batch_size, boxes_num, pts_num, boxes, pts, box_idx_of_points);
+
+  err = cudaGetLastError();
+  if (cudaSuccess != err) {
+    fprintf(stderr, "CUDA kernel failed : %s\n", cudaGetErrorString(err));
+    exit(-1);
+  }
+
+#ifdef DEBUG
+  cudaDeviceSynchronize();  // for using printf in kernel function
+#endif
+}
+
+void points_in_boxes_mixed_launcher(int pts_num, const float *boxes, 
+                              const float *pts, const int *batch_to_box,
+                              int *box_idx_of_points) {
+  // params boxes: (N, 7) [x, y, z, w, l, h, rz] in LiDAR coordinate, b is 
+  // the batch id, each box DO NOT overlaps params pts: (npoints, 4) [x, y, z, b]
+  // in LiDAR coordinate params boxes_idx_of_points: (npoints, ), default -1
+  cudaError_t err;
+
+  dim3 blocks(DIVUP(pts_num, THREADS_PER_BLOCK));
+  dim3 threads(THREADS_PER_BLOCK);
+  points_in_boxes_mixed_kernel<<<blocks, threads>>>(pts_num, boxes, pts, batch_to_box, box_idx_of_points);
 
   err = cudaGetLastError();
   if (cudaSuccess != err) {
@@ -198,6 +246,29 @@ int points_in_boxes_batch(at::Tensor boxes_tensor, at::Tensor pts_tensor,
 
   points_in_boxes_batch_launcher(batch_size, boxes_num, pts_num, boxes, pts,
                                  box_idx_of_points);
+
+  return 1;
+}
+
+int points_in_boxes_mixed_gpu(at::Tensor boxes_tensor, at::Tensor pts_tensor,
+                        at::Tensor batch_to_box_tensor, at::Tensor box_idx_of_points_tensor) {
+  // params boxes: (N, 7) [x, y, z, w, l, h, rz] in LiDAR coordinate, b is 
+  // the batch id, each box DO NOT overlaps params pts: (npoints, 4) [x, y, z, b]
+  // in LiDAR coordinate params boxes_idx_of_points: (npoints, ), default -1
+
+  CHECK_INPUT(boxes_tensor);
+  CHECK_INPUT(pts_tensor);
+  CHECK_INPUT(batch_to_box_tensor);
+  CHECK_INPUT(box_idx_of_points_tensor);
+
+  int pts_num = pts_tensor.size(0);
+
+  const float *boxes = boxes_tensor.data_ptr<float>();
+  const float *pts = pts_tensor.data_ptr<float>();
+  const int *batch_to_box = batch_to_box_tensor.data_ptr<int>();
+  int *box_idx_of_points = box_idx_of_points_tensor.data_ptr<int>();
+
+  points_in_boxes_mixed_launcher(pts_num, boxes, pts, batch_to_box, box_idx_of_points);
 
   return 1;
 }

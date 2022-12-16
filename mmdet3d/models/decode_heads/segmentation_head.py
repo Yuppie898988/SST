@@ -7,7 +7,7 @@ from mmcv.runner import auto_fp16, force_fp32
 from mmcv.cnn import normal_init
 from mmseg.models.builder import build_loss
 from mmdet.models.builder import build_loss as build_det_loss
-
+from mmdet3d.ops.roiaware_pool3d import points_in_boxes_mixed_gpu
 from mmdet3d.ops import build_mlp, scatter_v2
 from torch.utils.checkpoint import checkpoint
 
@@ -235,6 +235,17 @@ class VoteSegHead(Base3DDecodeHead):
 
         return labels, vote_targets, vote_mask
     
+    def get_targets_mixed(self, points, gt_bboxes, gt_labels, batch_id, batch_to_box):
+        points_xyzb = torch.cat((points[:,:3], batch_id), dim=1)
+        assert torch.all(gt_labels >= 0)
+        extra_width = self.train_cfg.get('extra_width', None) 
+        if extra_width is not None:
+            gt_bboxes = gt_bboxes.enlarged_box_hw(extra_width)
+        inbox_inds = points_in_boxes_mixed_gpu(points_xyzb, gt_bboxes.tensor, batch_to_box).long()
+        label = self.get_point_labels(inbox_inds, gt_labels)
+        vote_target, vote_mask = self.get_vote_target(inbox_inds, points_xyzb[:,:-1], gt_bboxes)
+
+        return label, vote_target, vote_mask
 
     def get_point_labels(self, inbox_inds, bbox_labels):
 

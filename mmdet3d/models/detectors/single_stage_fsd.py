@@ -224,9 +224,29 @@ class VoteSegmentor(Base3DSegmentor):
         coors_batch = torch.cat(coors_batch, dim=0)
         return points, coors_batch
 
-    def extract_feat(self, points, img_metas):
+    @torch.no_grad()
+    @force_fp32()
+    def voxelize_mixed(self, points, batch_id):
+        """Apply dynamic voxelization to points.
+        Args:
+            points (torch.Tensor): Points of each sample.
+            batch_id (torch.Tensor): Batch index of each point.
+        Returns:
+            tuple[torch.Tensor]: Concatenated points and coordinates.
+        """
+        assert isinstance(points, torch.Tensor)
+        # dynamic voxelization only provide a coors mapping
+        coors = self.voxel_layer(points)
+        batch_id = batch_id.int()
+        coors_batch = torch.cat((batch_id, coors), dim=-1)
+        return points, coors_batch
+
+    def extract_feat(self, points, img_metas, batch_id=None):
         """Extract features from points."""
-        batch_points, coors = self.voxelize(points)
+        if batch_id is None:
+            batch_points, coors = self.voxelize(points)
+        else:
+            batch_points, coors = self.voxelize_mixed(points, batch_id)
         coors = coors.long()
         voxel_features, voxel_coors, voxel2point_inds = self.voxel_encoder(batch_points, coors, return_inv=True)
         voxel_info = self.middle_encoder(voxel_features, voxel_coors)
@@ -278,19 +298,33 @@ class VoteSegmentor(Base3DSegmentor):
                       gt_labels_3d,
                       as_subsegmentor=False,
                       ):
+        bs = len(points)
+        # batch_to_box indicates the boxes index according to batch index
+        batch_to_box = points[0].new_zeros(bs+1, dtype=torch.int32)
+        batch_id = []
+        gt_bboxes_tensors = []
+        for idx, point in enumerate(points):
+            batch_id.append(point.new_full((point.shape[0], 1), idx))
+            batch_to_box[idx+1] = batch_to_box[idx] + len(gt_bboxes_3d[idx])
+            gt_bboxes_tensors.append(gt_bboxes_3d[idx].tensor)
+        batch_id = torch.cat(batch_id, dim=0)
+        points = torch.cat(points, dim=0)
+        gt_bboxes_tensors = torch.cat(gt_bboxes_tensors, dim=0)
+        gt_bboxes_3d = gt_bboxes_3d[0].new_box(gt_bboxes_tensors).to(points.device)
+        gt_labels_3d = torch.cat(gt_labels_3d, dim=0)
+
         if self.tanh_dims is not None:
-            for p in points:
-                p[:, self.tanh_dims] = torch.tanh(p[:, self.tanh_dims])
-        elif points[0].size(1) in (4,5):
+                points[:, self.tanh_dims] = torch.tanh(points[:, self.tanh_dims])
+        elif points.size(1) in (4,5):
             # a hack way to scale the intensity and elongation in WOD
-            points = [torch.cat([p[:, :3], torch.tanh(p[:, 3:])], dim=1) for p in points]
+            points = torch.cat([points[:, :3], torch.tanh(points[:, 3:])], dim=1)
         
         if self.voxel_downsampling_size is not None:
-            points = self.voxel_downsample(points)
+            points = self.voxel_downsample(points)  # TODO adapt for mixed
 
-        labels, vote_targets, vote_mask = self.segmentation_head.get_targets(points, gt_bboxes_3d, gt_labels_3d)
+        labels, vote_targets, vote_mask = self.segmentation_head.get_targets_mixed(points, gt_bboxes_3d, gt_labels_3d, batch_id, batch_to_box)
 
-        neck_out, pts_coors, points = self.extract_feat(points, img_metas)
+        neck_out, pts_coors, points = self.extract_feat(points, img_metas, batch_id)
 
         losses = dict()
 
@@ -328,7 +362,6 @@ class VoteSegmentor(Base3DSegmentor):
             output_dict = losses
 
         return output_dict
-
 
     def simple_test(self, points, img_metas, gt_bboxes_3d=None, gt_labels_3d=None, rescale=False):
 
